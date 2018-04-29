@@ -1,0 +1,31 @@
+---
+title: "Lesson 6 Solutions"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Let's do some exercises to practice what you have learned and review prior lessons.
+
+1. Create a new RMarkdown PDF document in RStudio and click the "Knit" button. Let RStudio install any missing LaTeX packages. Once you are able to generate a PDF successfully, try `html_document` and `slidy_presentation` output formats by clicking the drop down on the "Knit" button or changing the value for `output` in the YAML header.
+
+*No written solution.*
+
+2. Add `roxygen2` comments to one of your scripts from the exercises of the previous lessons and using the method of your choice, generate a RMarkdown HTML.
+
+```{r render, eval=FALSE}
+library(rmarkdown)
+
+# this script already has roxygen2 comments
+render("R scripts/retail_chord_diagram.R")
+```
+
+3. Prepare a well-formatted PDF document with a specific analysis embedded. You should query Vertica, use `dplyr` and `ggplot2` to produce pivoted data and a graph. Include explanations of the analysis and how you did it. Keep in mind that you don't need all R chunks to be visible; some that are strictly for setup don't have to be in the document. RMarkdown also can't read variables you have defined in your environment unless they are created in when compiling the document; therefore, you will need to use `getPass::getPass()` to prompt for a password.
+
+> If you can't think of an analysis, look at the percent of transactions that are coming in without an internal product ID by day for a client (last 30 days).
+
+*For a possible solution, see the file "R Training Exercise 6.3 Solution.Rmd" covering the hinted situation.*
