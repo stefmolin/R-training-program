@@ -1,0 +1,184 @@
+---
+title: "Lesson 3 Solutions"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r QueryVertica_setup, echo = FALSE, warning = FALSE, message=FALSE}
+library(RJDBC)
+library(getPass)
+
+username <- "s.molin"
+password <- getPass("Vertica password:")
+
+# Set .jar file location and Vertica connection string
+driverLocation <- "<path_to_your_vertica_driver>.jar"
+v <- "jdbc:vertica://<vertica_cluster_here>:<port>/<DB>?ConnectionLoadBalance=true"
+
+#' @description Query Vertica for the specified query. Return a dataframe of the results.
+#'
+#' @param username Vertica login
+#' @param query Vertica query (be careful with comments)
+#' @param password Vertica password to access the database
+#'
+#' @return dataframe of results
+#'
+#' @note Queries are turned into strings so if you comment with "--" the result will be
+#' a string with everything after that commented out. Be sure to remove those beforehand.
+#'
+
+QueryVertica <- function (username, query, password){
+  msg.out <- capture.output(suppressMessages(require(RJDBC)))
+  drv <- JDBC("com.vertica.jdbc.Driver", driverLocation)
+  conn <- dbConnect(drv, v, username, password)
+  data <- dbGetQuery(conn, query)
+  dbDisconnect(conn)
+  return(data)
+}
+```
+
+Let's do some practice problems to challenge your understanding.
+
+1. Query for two dataframes: (1) all AS in your office along with their employee IDs and (2) the accounts in the US and the AS employee ID associated with them. Use `dplyr` filtering joins to (a) preview the results that will be lost from dataframe (1) if you do an inner join on both tables and (b) preview the results that will remain in dataframe (1) if you do an inner join. (c) inner join dataframes (1) and (2) and confirm your results.
+
+```{r load_dplyr, warning = FALSE, message = FALSE}
+library(dplyr)
+```
+
+
+```{r solution1_pt1}
+# packages have been loaded along with QueryVertica()
+# username/password have been predefined
+
+# query for all AS in NY office
+ny_as_query <- "
+SELECT
+	employee_id
+	, full_name
+FROM
+	employee_lookup_table
+WHERE
+	cost_center_country = 'NY'
+	AND job_name = '<job_title_goes_here>'
+GROUP BY
+	employee_id
+	, full_name
+"
+
+nyAS <- QueryVertica(username, ny_as_query, password)
+
+# query for US accounts
+us_accounts_query <- "
+SELECT
+	account_strategist_employee_id
+	, merchant_name
+FROM
+	client_lookup_table
+WHERE
+	ranking = 'TIER 1'
+	AND client_country_code = 'US'
+GROUP BY
+	account_strategist_employee_id
+	, merchant_name
+"
+
+usAccounts <- QueryVertica(username, us_accounts_query, password)
+```
+
+\pagebreak
+
+```{r solution1_pt2}
+# look at number of rows in each table
+nrow(nyAS)
+nrow(usAccounts)
+
+# preview what will be lost from nyAS in inner join above (these AS don't have accounts)
+asWithoutAccounts <- anti_join(nyAS, usAccounts,
+                          by = c("employee_id" = "account_strategist_employee_id"))
+nrow(asWithoutAccounts)
+head(asWithoutAccounts)
+
+# preview what will be kept from nyAS in inner join above (all these AS have accounts)
+asWithAccounts <- semi_join(nyAS, usAccounts,
+                          by = c("employee_id" = "account_strategist_employee_id"))
+nrow(asWithAccounts)
+head(asWithAccounts)
+
+# inner join the two tables
+nyAccounts <- inner_join(nyAS, usAccounts,
+                          by = c("employee_id" = "account_strategist_employee_id"))
+nrow(nyAccounts)
+```
+
+```{r solution1_pt3}
+head(nyAccounts)
+
+# how many employees are left after the join
+length(unique(nyAccounts$employee_id))
+```
+
+\pagebreak
+
+2. Pull in the first names of every employee *currently* working at the company (cost centers US, NY, IL, SF), and, in a second dataframe, the first names of every employee that currently works at the company, but *not* in the US. Be sure to write a dynamic query, so that you only have to write one query! Use an `rbind()` to get the complete list of employee first names in a separate dataframe.
+
+```{r solution2}
+# dynamic query for first names
+name_query <- "
+SELECT
+	first_name
+FROM
+	employee_lookup_table
+WHERE
+	cost_center_country %s
+  AND job_status = 'LIVE'
+"
+
+usNames <- QueryVertica(username,
+                        sprintf(name_query, " IN ('US', 'NY', 'IL', 'SF')"),
+                        password)
+notUSNames <- QueryVertica(username,
+                           sprintf(name_query,  "NOT  IN ('US', 'NY', 'IL', 'SF')"),
+                           password)
+
+# all employee first names
+allNames <- rbind(usNames, notUSNames)
+head(allNames)
+tail(allNames)
+```
+
+\pagebreak
+
+3. Using the two dataframes you queried for in `(2)` and set operations, (a) find all first names that are either in the company (cost centers US, NY, IL, SF) **or** any other office, but **not** in both; (b) count how many people have each name, and sort it from most common to least common and by name alphabetically. Then, (c) flag and return the top 10 most common along with their counts, and (d) find the first names of the employees that are the only one in the company with that name, and (e) compare this result to the result from (a). (*Hint use `setequal()`*).
+
+```{r solution3_pt1}
+# names either in the company's US offices OR elsewhere (a)
+noOverlap <- usNames %>%
+  union(notUSNames) %>%
+  setdiff(intersect(usNames, notUSNames))
+head(noOverlap)
+
+# count names and sort (b)
+nameCount <- allNames %>%
+  select(first_name) %>%
+  group_by(first_name) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count), first_name)
+```
+
+```{r solution3_pt2}
+# top 10 most common (c)
+head(nameCount, 10) %>% mutate(top_10 = TRUE)
+
+# people with unique first names (d)
+uniqueNames <- nameCount %>%
+  filter(count == 1) %>%
+  select(first_name)
+
+# compare result from (d) to (a)
+setequal(noOverlap, uniqueNames)
+```

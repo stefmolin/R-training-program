@@ -1,0 +1,389 @@
+---
+title: "R Training Notes"
+subtitle: "Lesson 3"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r QueryVertica_setup, echo = FALSE, warning = FALSE, message = FALSE}
+library(getPass)
+library(RJDBC)
+
+username <- "s.molin"
+password <- getPass("Vertica password:")
+
+# Set .jar file location and Vertica connection string
+driverLocation <- "<path_to_your_vertica_driver>.jar"
+v <- "jdbc:vertica://<vertica_cluster_here>:<port>/<DB>?ConnectionLoadBalance=true"
+
+#' @description Query Vertica for the specified query. Return a dataframe of the results.
+#'
+#' @param username Vertica login
+#' @param query Vertica query (be careful with comments)
+#' @param password Vertica password to access the database
+#'
+#' @return dataframe of results
+#'
+#' @note Queries are turned into strings so if you comment with "--" the result will be
+#' a string with everything after that commented out. Be sure to remove those beforehand.
+#'
+
+QueryVertica <- function (username, query, password){
+  msg.out <- capture.output(suppressMessages(require(RJDBC)))
+  drv <- JDBC("com.vertica.jdbc.Driver", driverLocation)
+  conn <- dbConnect(drv, v, username, password)
+  data <- dbGetQuery(conn, query)
+  dbDisconnect(conn)
+  return(data)
+}
+```
+
+## I. Data Manipulation
+Now, we are going to build on the knowledge from the last session and learn how to use the `dplyr` package to manipulate dataframes quickly and efficiently in conjunction with the packages we covered in the prior lesson.
+
+We are going to continue with the below dataframes as we defined in the last lesson.
+```{r make_dfs}
+# define dataframes
+ids <- data.frame(name = c("Alice", "Bob", "Carly", "Dylan"), id = 101:104,
+                  stringsAsFactors = FALSE)
+ages <- data.frame(age = c(24, 26, 28), id = c(101:102, 105))
+
+# new employees
+newEmployees <- data.frame(name = c("Eva", "Frank"), id = 106:107,
+                           stringsAsFactors = FALSE)
+
+# revise the ids dataframe to include all employees
+ids <- rbind(ids, newEmployees)
+
+# view each dataframe
+ids
+ages
+newEmployees
+```
+
+\pagebreak
+
+### A. Type conversion and data cleaning
+Before we get into the `dplyr` package, let's learn how to clean up our data for analysis in R. We will use client stats for the last 7 days, handle any `NULL` values that come from our query, and change columns to more appropriate data types. Note that it won't always be necessary to clean this up depending on what you are looking to do in your analysis since you can have summary functions like `sum()`, `mean()`, etc. ignore `NA`'s (the value used when R reads in `NULL`) and you may not need to use the `day` string as a date. We will learn how to do the cleaning using base R; it is also possible in `dplyr`, but I will leave that for you to try on your own.
+
+```{r pullData_client}
+# get date for 7 days ago
+startDate <- Sys.Date() - 7
+
+# query for last 30 days of client stats for client 1
+query <- "SELECT
+            *
+          FROM
+            client_data_table
+          WHERE
+            day >= '%s'
+            AND client_id = 8050"
+
+# query Vertica for data and store in dataframe client_stats
+client_stats <- QueryVertica(username, sprintf(query, startDate), password)
+
+# look at a summary of the data to check for NA's and wrong data types
+summary(client_stats)
+```
+
+#### 1. Type Conversion
+Looking at the summary we can see that `day` was read in as a `character` when it should be a `Date` and `client_id` is not stored in the most optimal way. It is stored as a numeric, however, `client_id` is a categorical value so we should store it as a `factor`. There are a few other columns that make sense to be converted to factors, but we won't show those here. Type conversions can be accomplished by functions of the form `as.*()` where `*` is the class you want to convert to.
+
+#### 2. Data Cleaning (handling `NA`'s)
+The second thing we can glean from the summary is which columns have `NA`'s. Depending on the analysis you are doing you may want to remove rows with `NA` values, replace them with new values such as 0, or impute a value. Here we will replace all `NA` values in `post_click_conversions` and `post_click_sales` with 0 and remove all rows that have `NA` in the columns `post_view_conversions` or `post_view_sales`.
+
+```{r dataClean_client_stats}
+# change the day column to a date
+client_stats$day <- as.Date(client_stats$day)
+
+# change the client_id column to a factor
+client_stats$client_id <- as.factor(client_stats$client_id)
+
+# replace NAs with 0 in select columns
+client_stats[is.na(client_stats$post_click_conversions), "post_click_conversions"] <- 0
+client_stats[is.na(client_stats$post_click_sales), "post_click_sales"] <- 0
+
+# remove select rows
+client_stats <- client_stats[!(is.na(client_stats$post_view_conversions) |
+                   is.na(client_stats$post_view_sales)),]
+
+# look at summary of modified columns
+summary(client_stats[, c("day", "client_id", "post_click_conversions",
+                  "post_click_sales", "post_view_conversions", "post_view_sales")])
+```
+
+### B. `dplyr`
+The `dplyr` package is extremely useful when working with dataframes. You can chain together several "verbs" to step-by-step transform your dataframe without having to write a complicated query. You can also take in granular data (either from Vertica or read in from a file) and use `dplyr` to get the information you wanted if Vertica keeps timing out or you aren't sure how to write a query to do what you need. We are going to cover the pipe operator (`%>%`), the 5 verbs and `group_by()`, joins, and set operations.
+
+```{r load_dplyr, warning = FALSE, message = FALSE}
+library(dplyr)
+```
+
+#### 1. The pipe operator
+
+> The pipe operator (`%>%`) uses the object before the pipe as the first argument to the function after the pipe. It is read as "and then". You can use **ctrl + shift + m** to add the pipe operator. Note that you can use this operator for any function; it doesn't have to be a `dplyr` function as long as you load the `dplyr` package. This becomes extremely helpful for readability when you have multiple nested function calls.
+
+```{r pipe_example}
+# find max age from the ages dataframe defined earlier
+max(ages$age)
+
+# now using the pipe operator
+ages$age %>% max()
+```
+
+\pagebreak
+
+#### 2. The 5 verbs + `group_by()`
+There are many functions available in the `dplyr` package, however, the 5 verbs and `group_by()` are the ones I find applicable in most situations. Before we get into what each one does, let's pull in a dataset to work with in the examples. We are going to look at performance stats for the client client 2. Note that some of the below can be done in base R, but `dplyr` will make your code easier to read.
+
+
+```{r pullData_client_2_stats}
+# get date for 30 days ago
+startDate <- Sys.Date() - 30
+
+# query for last 30 days of client stats for client 2
+query <- "SELECT
+            *
+          FROM
+            client_data_table
+          WHERE
+            day >= '%s'
+            AND client_id = 4624"
+
+# query Vertica for data and store in dataframe client_2_stats
+client_2_stats <- QueryVertica(username, sprintf(query, startDate), password)
+
+# see how many rows we pulled in
+nrow(client_2_stats)
+
+# see what columns we pulled in
+colnames(client_2_stats)
+```
+
+Looks like we got more data than we bargained for! Let's use `dplyr` to clean up the dataframe.
+
+\pagebreak
+
+##### i. `select()`
+The `client_2_stats` dataframe contains more columns than we need. The `select()` function in `dplyr` works just like a `SELECT` statement in a query. We can use `select()` to only keep the columns relevant to our analysis. To select columns, provide their name or their index; you can drop columns by negating your selection (adding "`-`" in front). We can also do the below in base R with `df[, c("col1", "col2")]`
+
+```{r dplyr_select}
+# select columns by name and show first 3 (rename conversions and sales)
+client_2_stats %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>% head(3)
+```
+
+Note that the below are equivalent ways of performing the same selection (but without the column renaming we performed above).
+```{r select_alternate, eval = FALSE}
+# select columns by index
+client_2_stats %>%
+  select(1:5, 7:8)
+
+# drop columns by index
+client_2_stats %>%
+  select(-c(6, 9:18))
+```
+
+*`dplyr` also contains several functions that can be used in conjunction with `select()` to pick the columns that match certain criteria; among these are `starts_with()`, `ends_with()`, `contains()`, `matches()`, `one_of()` which you can read up on later.*
+
+##### ii. `filter()`
+Great, now we have the columns we needed, but turns out we only needed the last 25 days. Now what? We will use the `filter()` function (like the `WHERE` clause) to filter the data to what we need continuing from the code we started in the `select()` section so you get an idea of how this looks in practice. In base R you can filter using: `df[condition,]` (i.e. `df[as.Date(df$day) <= "`r Sys.Date()`",]`).
+
+```{r dplyr_filter}
+# select columns and filter for last 25 days
+x1 <- client_2_stats %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>%
+  filter(as.Date(day) >= Sys.Date() - 25)
+
+# look at the dates we got back
+unique(x1$day)
+```
+
+\pagebreak
+
+##### iii. `arrange()`
+Looks like we got the proper dates and columns now, but they are all out of order. We can't tell what we are looking at! Let's use `arrange()` to sort the data by the `day` column; this is equivalent to the `ORDER BY` clause. Note this can be done in base R with `df[order(df$sort_column),]` and you can use `rev()` on `order()` to do decreasing order (i.e. `df[rev(order(df$sort_column),]`).
+
+```{r dplyr_arrange}
+# select columns, filter to last 25 days, and sort by day increasing
+x2 <- client_2_stats %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>%
+  filter(as.Date(day) >= Sys.Date() - 25) %>%
+  arrange(day)
+
+# check what order the dates are in now
+unique(x2$day)
+```
+
+*Note you can sort descending by using `arrange(desc(day))`.*
+
+##### iv. `mutate()`
+Now that we have data that makes more sense, let's introduce `mutate()` which allows us to add new columns like CTR and CPC. Note in base R you can add columns as `df$new_col <- new_values`.
+
+```{r dplyr_mutate}
+# select columns, filter to last 25 days, add CTR and CPC, sort by day increasing
+client_2_stats %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>%
+  filter(as.Date(day) >= Sys.Date() - 25) %>%
+  mutate(ctr = clicks/displays, cpc = revenue/clicks) %>%
+  arrange(day) %>%  
+  head()
+```
+
+\pagebreak
+
+##### v. `summarize()`
+All we have to do now is `summarize()` (aggregate) everything over the time period.
+
+```{r dplyr_summarize}
+# select columns, filter to last 25 days, and sort by day increasing
+# summarize the result (we don't need the arrange or mutate here)
+client_2_stats %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>%
+  filter(as.Date(day) >= Sys.Date() - 25) %>%
+  summarize(days = n_distinct(day), rows = n(), total_clicks = sum(clicks, na.rm = TRUE),
+            total_imps = sum(displays, na.rm = TRUE), spend = sum(revenue, na.rm = TRUE),
+            conv = sum(pc_conv, na.rm = TRUE), sales = sum(pc_sales, na.rm = TRUE),
+            ctr = total_clicks/total_imps)
+```
+
+Notice how we were able to use `total_clicks` and `total_imps` in an equation in `summarize()` after we defined them; you can also do this with `mutate()`. `dplyr` contains the `n_distinct()` and `n()` functions among others that will be helpful when aggregating. We also included `na.rm = TRUE` in our calls to `sum()`, if you don't R will try to add `NA`'s which are basically NULL's to your data and as a result you won't get anything useful back; this tells R to ignore those in the `sum()` calculation.
+
+##### vi. `group_by()`
+That is helpful, but it wasn't exactly what we were looking for. We want all these metrics by day, but the data isn't aggregated like that in Vertica and `summarize()` can't handle it on its own. We need to `GROUP BY` just like in a query. We can use `dplyr`'s aptly named `group_by()` to do this for us and complete our analysis.
+
+```{r dplyr_group_by}
+# select columns, filter to last 25 days, group by day to summarize
+# add ctr and cpc and sort by day
+client_2_stats_pivot <- client_2_stats %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>%
+  filter(as.Date(day) >= Sys.Date() - 25) %>%
+  group_by(day) %>%
+  summarize(total_clicks = sum(clicks, na.rm = TRUE),
+            total_imps = sum(displays, na.rm = TRUE), spend = sum(revenue, na.rm = TRUE),
+            conv = sum(pc_conv, na.rm = TRUE)) %>%
+  mutate(ctr = total_clicks/total_imps, cpc = spend/total_clicks) %>%
+  arrange(day)
+
+# view first few rows
+head(client_2_stats_pivot, 3)
+```
+
+*Note that order matters with `group_by()` and `summarize()`. If you want to summarize by groups you **must** first `group_by()` and then `summarize()`.*
+
+\pagebreak
+
+It is important to note that after using this `dplyr` function, your dataframe gets turned into a tibble. Don't worry though, you can still use all your dataframe code on these objects; they are just enhanced versions of dataframes.
+
+```{r tibble_intro}
+class(client_2_stats_pivot)
+```
+
+#### 3. Join operations
+`dplyr` also provides various functions for joining dataframes with clearer syntax than base R's `merge()`. There are 2 main categories: mutating joins and filtering joins. As with base R, `dplyr`'s version will join on all common columns, but you can specify them in the `by` argument. `dplyr` will tell you which columns it joined on in the output.
+
+##### i. Mutating joins
+Mutating joins add columns to the resulting dataframe. For example, if you are left joining table `y` to table `x`, you are adding the columns of `y` that `x` didn't have and joining on the columns in common.
+
+* `left_join()`
+* `right_join()`
+* `inner_join()`
+* `full_join()`
+
+Let's redo the joins we did using `merge()` from base R in the last lesson.
+
+```{r dplyr_mutating_joins}
+# inner join
+inner_join(ids, ages)
+
+# left outer join
+left_join(ids, ages)
+
+# right outer join
+right_join(ids, ages)
+
+# full outer join
+full_join(ids, ages)
+```
+
+##### ii. Filtering joins
+Filtering joins return the result of a join without adding columns from the second dataframe. Here you are joining `x` and `y`, but you don't want any columns from `y`, you are just using it to **filter** `x`.
+
+* `semi_join()`: filters results of primary table to those with matches in the secondary table (preview of rows kept from left table after inner join)
+* `anti_join()`: filters results of primary table to those which do not have a match in the secondary table (opposite of `semi-join()`). You can also think of this as which columns will I lose if I do an inner join.
+
+Let's take a look at how these work with the same data from the mutating joins section.
+```{r dplyr_filtering_joins}
+# semi-join (which rows in ids have matches in ages?)
+semi_join(ids, ages)
+
+# anti-join (which rows in ids don't have matches in ages?)
+anti_join(ids, ages)
+```
+
+\pagebreak
+
+#### 4. Set operations
+A set is a collection of distinct objects. There are four set operations best explained with Venn Diagrams: union, intersection, difference, and complement. *(Left to right, top to bottom)*
+
+![Union](http://www.math.cmu.edu/~bkell/21110-2010s/venn-union.png) ![Intersection](http://math.cmu.edu/~bkell/21110-2010s/venn-intersection.png)
+
+![Difference](/Users/S.Molin/Pictures/venndiagram-difference.png) ![Complement](http://math.cmu.edu/~bkell/21110-2010s/venn-a-complement.png)
+
+R doesn't cover complement because calculating the complement of a dataframe requires knowing the entire sample space which isn't feasible in practice. Set operations from `dpylr` will take in 2 dataframes (A and B) and return the result of the set operation, removing duplicates. You can also provide other data types such as vectors or dataframe columns to these functions; however, whatever arguments you provide, both need to have the same columns.
+
+* `union()`: returns all rows that appear in either A or B, removing duplicates.
+* `intersect()`: returns all rows in common.
+* `setdiff()`: returns all rows in A that aren't in B.
+* `setequal()`: tests if A and B contain the exact same data (in any order) and returns a boolean.
+
+Let's continue with the dataframes we defined earlier.
+
+```{r duplicated_df}
+# add duplicate data to the second dataframe
+newEmployees2 <- rbind(newEmployees,
+                        data.frame(name = c("Alice", "Bob"), id = c(110L, 102L),
+                                   stringsAsFactors = FALSE))
+```
+
+\pagebreak
+
+```{r dplyr_union}
+# union of employee tables
+union(ids, newEmployees2)
+```
+
+*Notice that we lose the "Bob", "Eva", and "Frank" rows since they were entirely duplicates, but "Alice" stays since the rows had different IDs.*
+
+```{r dplyr_intersect}
+# intersection of employee tables
+intersect(ids, newEmployees2)
+```
+
+*This time we only see the duplicated rows. (You can use `intersect()` to see what will be deduplicated in a call to `union()`).*
+
+```{r dplyr_setdiff}
+# difference of employee tables
+setdiff(ids, newEmployees2)
+```
+
+*The result contains all the rows from A that we would lose if we ran `intersect()`.*
+
+```{r dplyr_setequal}
+# check if ids and newEmployees2 are the same
+setequal(ids, newEmployees2)
+
+# check if these are equal (order doesn't matter)
+setequal(c("Alice", "Bob"), c("Bob", "Alice"))
+```
