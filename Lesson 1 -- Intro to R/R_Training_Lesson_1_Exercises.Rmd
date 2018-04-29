@@ -1,0 +1,22 @@
+---
+title: "Lesson 1 Exercises"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Let's do some practice problems to challenge your understanding. 
+
+1. Calculate the average (`mean()`) and standard deviation (`sd()`) of the `speed` column in the `cars` dataframe.
+
+2. Create a new column in the dataframe `cars` called `time` defined as `dist`/`speed`
+
+3. A Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding numbers (1, 1, 2, 3, 5, 8, ...). Write a function `fibonacci()` that takes one argument `n`, the size of the sequence you want to print and outputs a Fibonacci sequence of that length. To make this easier, you can assume that the user always properly implements this function (they always provide an n of 1 or greater).
+
+> Extra credit: Have the function handle cases for all numeric values of n and notify the user of an error i.e. if n <= 0 is given.
+
+> *Hint*: Intialize a vector using `numeric(n)` to store your sequence, and have your function *return* the vector.
