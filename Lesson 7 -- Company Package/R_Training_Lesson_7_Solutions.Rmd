@@ -1,0 +1,136 @@
+---
+title: "Lesson 7 Solutions"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "cairo_pdf", warning = FALSE, message = FALSE)
+```
+
+```{r credentials, echo = FALSE}
+library(getPass)
+
+username <- "s.molin"
+password <- getPass("Vertica password:")
+```
+
+Let's do some practice problems to challenge your understanding of the company R package and review the material from the prior lessons.
+
+1. Write a query to collect the last 30 days of stats for the client of your choice and save it as a `.sql` file. Make the query simple (like the one we used in the lesson) and dynamic. Use the company R package to read the query into a string and query Vertica once you have modified the query. Use `dplyr` to pivot the data up as you wish, then save the dataframe to a CSV.
+
+```{r solution1_pt1}
+# load libraries
+library(companyR)
+library(dplyr)
+
+# parameters
+startDate <- Sys.Date() - 30
+client_1_client_id <- 8050
+
+# read query from a file
+query <- read_query_from_file("client_stats_query.sql")
+
+# query for last 30 days of client stats for client_1
+client_1 <- pull_data_vertica(sprintf(query, startDate, client_1_client_id), cluster = "pa4",
+                           username = username, password = password)
+
+# pivot dataframe
+client_1_pivot <- client_1 %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>%
+  group_by(day) %>%
+  summarize(total_clicks = sum(clicks, na.rm = TRUE),
+            total_imps = sum(displays, na.rm = TRUE),
+            spend = sum(revenue, na.rm = TRUE),
+            conv = sum(pc_conv, na.rm = TRUE)) %>%
+  mutate(ctr = total_clicks/total_imps, cpc = spend/total_clicks) %>%
+  arrange(day)
+
+# see first few rows
+head(client_1_pivot, 3)
+
+# write to a CSV
+csv_name <- "client_1.csv"
+write.csv(x = client_1_pivot, file = csv_name, row.names = FALSE)
+```
+
+\pagebreak
+
+2. Using the dataframe you obtained in (1), (a) make a company-themed ggplot showing spend by day. (b) Save the graph as a PNG. (c) Send both the PNG and the CSV from (1) to yourself using the company R package.
+
+```{r solution2_pt1, fig.height=3.7}
+# load library
+library(ggplot2)
+
+# define aesthetics
+(plot <- client_1_pivot %>%
+  ggplot(aes(x = as.Date(day), y = spend)) +
+
+  # add line
+  geom_line() +
+
+  # format labels
+  xlab("Date") +
+  scale_y_continuous("Spend", labels = scales::dollar) +
+
+  # add title
+  ggtitle("Spend by Day", subtitle = "client_1 L30D") +
+
+  # companyR themes and colors
+  companyR::scale_color_company() +
+  companyR::theme_company_default())
+```
+
+```{r solution2_pt2}
+# save the plot as an image
+plot_name <- "client_1.png"
+ggsave(plot_name, plot)
+
+# send plot and CSV
+send_email(username = username, password = password, recipient = "s.molin@company.com",
+           attachment_files = c(csv_name, plot_name), subject = "companyR Training Ex 2")
+```
+
+\pagebreak
+
+3. Turn the dataframe and ggplot from (1) and (2) into a PowerPoint using the company R package and `ReporteRs`. Send yourself the deck.
+
+```{r solution3}
+# create ppt object
+ppt <- companyR::ppt_company_template()
+
+# load ReporteRs library
+library(ReporteRs)
+
+# add slides and content
+# add title slide
+ppt <- addSlide(ppt, "main_title")
+ppt <- addTitle(ppt, "client_1 Performance Last 30 Days", width = 8)
+
+# add slide for graph
+ppt <- ppt %>%
+  addSlide("blank_slide") %>%
+  addTitle("Spend by Day") %>%
+  addPlot(fun = print, x = plot)
+
+# add slide for metrics by day
+ppt <- ppt %>%
+  addSlide("blank_slide") %>%
+  addTitle("Daily Stats") %>%
+  addFlexTable(FlexTable(client_1_pivot))
+
+# add an end slide
+ppt <- addSlide(ppt, "end_slide")
+
+# save the ppt
+filename <- "client_1 Metrics Last 30 Days.pptx"
+writeDoc(ppt, file = filename)
+
+# send email with PPT
+send_email(username = username, recipient = "s.molin@company.com",
+           attachment_files = filename, password = password,
+           subject = "client_1 PPT: Solution 3",
+           body = "client_1 PPT from companyR Training.")
+```

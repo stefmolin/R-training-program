@@ -1,0 +1,313 @@
+---
+title: "R Training"
+subtitle: "Lesson 7"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "cairo_pdf", warning = FALSE, message = FALSE)
+```
+
+```{r credentials, echo = FALSE}
+library(getPass)
+
+username <- "s.molin"
+password <- getPass("Vertica password:")
+```
+
+## I. companyR
+You will be happy to know the company has its own R package (`companyR`) that makes it easier to query our databases, make company-themed graphs, generate PowerPoints, and send emails on the company network. The idea behind the package is to curate a collection of functions that everyone at the company can use without having to write their own code for the same task, like querying Vertica. It is constantly being improved, so this document will just be able to highlight the current state of the package.
+
+### A. Installing `companyR`
+`companyR` lives on gitlab, not CRAN, so, we need to use a function from the `devtools` package to allow us to install this (`install.packages()` won't work in this case).
+
+* Follow the instructions here: <url>
+* Any errors that arise naming a package mean that you need to install that package (i.e. run `install.packages("package")`) and try to install `companyR` again.
+
+### B. `companyR` Functions
+Now that we have the companyR package, let's see what functions we have at our disposal. You can see the functions available in a package using: `ls("package:<package_name>")`. If you want to see the arguments for a particular function, but don't need the full help page, use `args(<function_name>)`.
+
+```{r loadcompanyR}
+# load companyR
+library(companyR)
+
+# show functions in companyR
+ls("package:companyR")
+```
+
+\pagebreak
+
+```{r args_example}
+# see arguments for companyR
+args(send_email)
+```
+
+### C. `companyR` Use Case
+Now, we are going to build on our R knowledge and learn how to use the `companyR` package for various tasks in conjunction with the packages we covered in prior lessons.
+
+#### 1. Querying Databases
+Let's pull last 30 days of client data for client_1. We are going to use `companyR` to read the query in from a file and query Vertica. Then we use `dplyr` to pivot our data into `client_1_pivot` which you should remember from the other lessons; the only difference here is how we got the query and the data from Vertica. *Note that `companyR` also has a function to query the SQL server.*
+
+```{r pullData_pt1}
+# load dplyr
+library(dplyr)
+
+# get date for 30 days ago
+startDate <- Sys.Date() - 30
+
+# client_1 client_id
+client_1_client_id <- 4624
+
+# read query from a file
+query <- read_query_from_file("client_stats_query.sql")
+
+# look at query using stringr to clean up whitespaces for printing
+library(stringr)
+cat(str_replace_all(query, "\\s{2,}", " "))
+
+# query for last 30 days of client stats for client_1
+# (select cluster in function call)
+# here we provide the password but if you don't you will be prompted to enter it
+client_1 <- pull_data_vertica(sprintf(query, startDate, client_1_client_id), cluster = "pa4",
+                           username = username, password = password)
+```
+
+\pagebreak
+
+```{r pullData_pt2}
+# pivot dataframe and filter down to 25 days
+client_1_pivot <- client_1 %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>%
+  filter(as.Date(day) >= Sys.Date() - 25) %>%
+  group_by(day) %>%
+  summarize(total_clicks = sum(clicks, na.rm = TRUE),
+            total_imps = sum(displays, na.rm = TRUE),
+            spend = sum(revenue, na.rm = TRUE),
+            conv = sum(pc_conv, na.rm = TRUE)) %>%
+  mutate(ctr = total_clicks/total_imps, cpc = spend/total_clicks) %>%
+  arrange(day)
+
+# see first few rows
+head(client_1_pivot)
+```
+
+#### 2. Company-themed `ggplot2` Graphs
+`companyR` has functions for easily formatting your `ggplot2` graphs to company colors. `scale_color_company()` and `scale_fill_company()` will format the colors used in the `col` and `fill` aesthetics, respectively. `theme_company_default()` will handle the rest. *Note that to use this in an RMarkdown PDF you will need to add `dev = "cairo_pdf"` to the `knitr` options at the top of the .Rmd file.*
+
+```{r company_themed_graph, fig.height=4}
+# clicks vs. CPC for client_1 colored by days of the week
+
+# load library
+library(ggplot2)
+
+# define aesthetics
+(plot <- client_1_pivot %>%
+  ggplot(aes(x = cpc, y = total_clicks,
+             col = factor(format(as.Date(client_1_pivot$day), "%A"),
+                          levels = c("Sunday", "Monday", "Tuesday",
+                                     "Wednesday", "Thursday", "Friday",
+                                     "Saturday")))) +
+  # add points
+  geom_point() +
+
+  # format labels
+  scale_x_continuous("CPC", labels = scales::dollar) +
+  scale_y_continuous("Clicks", labels = scales::comma) +
+
+  # add title
+  ggtitle("Clicks vs. CPC", subtitle = "client_1 L25D") +
+
+  # companyR themes and colors
+  companyR::scale_color_company() +
+  companyR::theme_company_default())
+```
+
+#### 3. Generate Company-themed PowerPoint Decks
+`companyR` provides a function `ppt_company_template()` which will instantiate a PowerPoint object (using the company template slide) which you can use with the `ReporteRs` package to fill with the content of your choosing.
+
+```{r sample_ppt}
+# create ppt object
+ppt <- companyR::ppt_company_template()
+
+# load ReporteRs library
+library(ReporteRs)
+
+# add slides and content
+# add title slide
+ppt <- addSlide(ppt, "main_title")
+ppt <- addTitle(ppt, "client_1 Performance Last 25 Days", width = 8)
+
+# add slide for graph
+ppt <- ppt %>%
+  addSlide("text_and_xlarge_image_horizontal") %>%
+  addTitle("Clicks vs. CPC") %>%
+  addParagraph("Here is clicks vs. CPC for the last 25 days.") %>%
+  addPlot(fun = print, x = plot)
+
+# add slide for metrics by day
+ppt <- ppt %>%
+  addSlide("blank_slide") %>%
+  addTitle("Daily Stats") %>%
+  addFlexTable(FlexTable(client_1_pivot))
+
+# add an end slide
+ppt <- addSlide(ppt, "end_slide")
+
+# save the ppt
+filename <- "client_1 Metrics Last 25 Days.pptx"
+writeDoc(ppt, file = filename)
+```
+
+Note that for each slide you create you will need to know the name of that particular layout. You can cycle through the options using the below code:
+
+```{r notes_on_slide_creations, eval=FALSE}
+## not run (this is how you see what layouts are available)
+# view available slide layouts (by name)
+slide.layouts(ppt)
+
+# see how the available slide layouts look
+layouts <- slide.layouts(ppt)
+for(i in layouts){
+	slide.layouts(temp_ppt, i)
+	title(sub = i)
+	if(interactive()) readline(prompt = "show next slide layout")
+}
+##
+```
+
+#### 4. Sending Emails
+You can use the `send_email()` function to send emails (and attachments) using Company credentials.
+
+```{r send_email}
+# send the email with the ppt
+companyR::send_email(username = username, recipient = "s.molin@company.com",
+                    attachment_files = filename, password = password,
+                    subject = "client_1 PPT",
+                    body = "client_1 PPT from companyR Training.")
+```
+
+
+\pagebreak
+
+## II. Exercises
+Let's do some practice problems to challenge your understanding of `companyR` and review the material from the prior lessons.
+
+1. Write a query to collect the last 30 days of stats for the client of your choice and save it as a `.sql` file. Make the query simple (like the one we used in the lesson) and dynamic. Use `companyR` to read the query into a string and query Vertica once you have modified the query. Use `dplyr` to pivot the data up as you wish, then save the dataframe to a CSV.
+
+```{r solution1_pt1}
+# load libraries
+library(companyR)
+library(dplyr)
+
+# parameters
+startDate <- Sys.Date() - 30
+client_1_client_id <- 8050
+
+# read query from a file
+query <- read_query_from_file("client_stats_query.sql")
+
+# query for last 30 days of client stats for client_1
+client_1 <- pull_data_vertica(sprintf(query, startDate, client_1_client_id), cluster = "pa4",
+                           username = username, password = password)
+
+# pivot dataframe
+client_1_pivot <- client_1 %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>%
+  group_by(day) %>%
+  summarize(total_clicks = sum(clicks, na.rm = TRUE),
+            total_imps = sum(displays, na.rm = TRUE),
+            spend = sum(revenue, na.rm = TRUE),
+            conv = sum(pc_conv, na.rm = TRUE)) %>%
+  mutate(ctr = total_clicks/total_imps, cpc = spend/total_clicks) %>%
+  arrange(day)
+
+# see first few rows
+head(client_1_pivot, 3)
+
+# write to a CSV
+csv_name <- "client_1.csv"
+write.csv(x = client_1_pivot, file = csv_name, row.names = FALSE)
+```
+
+\pagebreak
+
+2. Using the dataframe you obtained in (1), (a) make a Company-themed ggplot showing spend by day. (b) Save the graph as a PNG. (c) Send both the PNG and the CSV from (1) to yourself using `companyR`.
+
+```{r solution2_pt1, fig.height=3.7}
+# load library
+library(ggplot2)
+
+# define aesthetics
+(plot <- client_1_pivot %>%
+  ggplot(aes(x = as.Date(day), y = spend)) +
+
+  # add line
+  geom_line() +
+
+  # format labels
+  xlab("Date") +
+  scale_y_continuous("Spend", labels = scales::dollar) +
+
+  # add title
+  ggtitle("Spend by Day", subtitle = "client_1 L30D") +
+
+  # companyR themes and colors
+  companyR::scale_color_company() +
+  companyR::theme_company_default())
+```
+
+```{r solution2_pt2}
+# save the plot as an image
+plot_name <- "client_1.png"
+ggsave(plot_name, plot)
+
+# send plot and CSV
+send_email(username = username, password = password, recipient = "s.molin@company.com",
+           attachment_files = c(csv_name, plot_name), subject = "companyR Training Ex 2")
+```
+
+\pagebreak
+
+3. Turn the dataframe and ggplot from (1) and (2) into a PowerPoint using `companyR` and `ReporteRs`. Send yourself the deck.
+
+```{r solution3}
+# create ppt object
+ppt <- companyR::ppt_company_template()
+
+# load ReporteRs library
+library(ReporteRs)
+
+# add slides and content
+# add title slide
+ppt <- addSlide(ppt, "main_title")
+ppt <- addTitle(ppt, "client_1 Performance Last 30 Days", width = 8)
+
+# add slide for graph
+ppt <- ppt %>%
+  addSlide("blank_slide") %>%
+  addTitle("Spend by Day") %>%
+  addPlot(fun = print, x = plot)
+
+# add slide for metrics by day
+ppt <- ppt %>%
+  addSlide("blank_slide") %>%
+  addTitle("Daily Stats") %>%
+  addFlexTable(FlexTable(client_1_pivot))
+
+# add an end slide
+ppt <- addSlide(ppt, "end_slide")
+
+# save the ppt
+filename <- "client_1 Metrics Last 30 Days.pptx"
+writeDoc(ppt, file = filename)
+
+# send email with PPT
+send_email(username = username, recipient = "s.molin@company.com",
+           attachment_files = filename, password = password,
+           subject = "client_1 PPT: Solution 3",
+           body = "client_1 PPT from companyR Training.")
+```
