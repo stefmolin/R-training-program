@@ -1,0 +1,151 @@
+---
+title: "Lesson 5 Solutions"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, echo = FALSE, warning = FALSE, message = FALSE}
+library(RJDBC)
+library(getPass)
+
+username <- "s.molin"
+password <- getPass("Vertica password:")
+
+
+# Set .jar file location and Vertica connection string
+driverLocation <- "<vertica_driver_path>.jar"
+v <- "jdbc:vertica://<vertica_cluster>:<port>/<db>?ConnectionLoadBalance=true"
+
+#' @description Query Vertica for the specified query. Return a dataframe of the results.
+#'
+#' @param username Vertica login
+#' @param query Vertica query (be careful with comments)
+#' @param password Vertica password to access the database
+#'
+#' @return dataframe of results
+#'
+#' @note Queries are turned into strings so if you comment with "--" the result will be
+#' a string with everything after that commented out. Be sure to remove those beforehand.
+#'
+
+QueryVertica <- function (username, query, password){
+  msg.out <- capture.output(suppressMessages(require(RJDBC)))
+  drv <- JDBC("com.vertica.jdbc.Driver", driverLocation)
+  conn <- dbConnect(drv, v, username, password)
+  data <- dbGetQuery(conn, query)
+  dbDisconnect(conn)
+  return(data)
+}
+```
+
+Let's do some practice problems to challenge your understanding.
+
+1. Query Vertica for spend by day for the last 5 days for 3 clients of your choice. Reshape the long dataframe into a wide one with each client as a column.
+
+```{r presolution1, warning=FALSE, message=FALSE}
+library(reshape2)
+```
+
+```{r solution1_part1}
+# QueryVertica has been loaded along with username/password
+query <- "
+SELECT
+	day
+	, client_name
+	, SUM(revenue) AS spend
+FROM
+	(SELECT
+		client_name
+		, client_id
+	FROM
+		client_lookup_table
+	WHERE
+		client_name IN ('c1', 'c2', 'c3')
+	GROUP BY
+		client_name
+		, client_id) cl
+JOIN
+	client_stats_table stats
+ON
+	cl.client_id = stats.client_id
+WHERE
+	day >= CURRENT_DATE() - 5
+GROUP BY
+	day
+	, client_name
+"
+
+df <- QueryVertica(username, query, password)
+
+# inspect data
+head(df)
+```
+
+\pagebreak
+
+```{r solution1_part2}
+# reshape the data
+(reshaped_df <- dcast(melt(df), day ~ client_name + variable))
+```
+
+2. Read in a 2M row excerpt of the client catalog from the provided textfile using the `fread()` function from `data.table` (this is faster than base R and automatically detects options). The file will be read into a `data.table`. (a) Drop the `sqlid` column. (b) Rename the `id` column `external_id`. (c) Make the `name` and `external_id` columns keys. (d) Select the `name` and `external_id` of the most expensive item and least expensive item. Limit the name of the selection to 35 characters.
+
+```{r presolution2, warning=FALSE, message=FALSE}
+library(data.table)
+library(stringr)
+```
+
+```{r solution2}
+# read in catalog using data.table's fread()
+catalog <- fread("client_catalog.txt")
+
+# drop column
+catalog <- catalog[, sqlid := NULL]
+
+# update id column name
+setnames(catalog, "id", "external_id")
+
+# make keys
+setkey(catalog, name, external_id)
+
+# select the most and least expensive items
+solution <- catalog[c(which.max(price), which.min(price)), price,
+                    by = .(name, external_id)]
+solution[, c("max_or_min", "name") := .(c("Max", "Min"), str_sub(name, 1, 35))]
+solution
+```
+
+3. Using the client catalog you obtained in `(2)`, (a) find number of products with extra data containing the word "promo". (b) Find the unique promo offers and display a few of them. You will need to use a regular expression to find the value in the `extra` field, then you will need to use `str_match()` to find that pattern, and use a function from the `apply` family to get the results of applying that function on all values of `extra`.
+
+> *Hint*: If you are having trouble with the regex, you can take a few entries of the `extra` column in the data.table and work on adapting a regex here: http://regexr.com/. Be sure to look at how `str_match()` works and pick an appropriate `apply` family member; depending on how you do this, you may need to change the type of the object you give the function from the `apply` family.
+
+```{r presolution3, eval=FALSE}
+library(stringr)
+```
+
+```{r solution3}
+# check if each item has "promo" in extra field
+on_promo <- lapply(catalog[, extra], str_detect, pattern = "promo")
+
+# calculate number of promo products
+sum(unlist(on_promo))
+
+# find all promo offers (this is different than just looking for the word promo)
+promos <- apply(as.matrix(catalog[, extra]), 1, FUN = str_match,
+                pattern = "(?:promo@V)([^@]+)")[2,]
+
+# remove the NA's from promos
+promos <- na.omit(promos)
+
+# find all unique promos
+unique_promos <- unique(promos)
+length(unique_promos)
+
+# display a few promos
+head(unique_promos)
+```

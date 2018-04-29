@@ -1,0 +1,487 @@
+---
+title: "R Training"
+subtitle: "Lesson 5"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, echo = FALSE, warning = FALSE, message = FALSE}
+library(RJDBC)
+library(getPass)
+
+username <- "s.molin"
+password <- getPass("Vertica password:")
+
+
+# Set .jar file location and Vertica connection string
+driverLocation <- "<vertica_driver_path>.jar"
+v <- "jdbc:vertica://<vertica_cluster>:<port>/<db>?ConnectionLoadBalance=true"
+
+#' @description Query Vertica for the specified query. Return a dataframe of the results.
+#'
+#' @param username Vertica login
+#' @param query Vertica query (be careful with comments)
+#' @param password Vertica password to access the database
+#'
+#' @return dataframe of results
+#'
+#' @note Queries are turned into strings so if you comment with "--" the result will be
+#' a string with everything after that commented out. Be sure to remove those beforehand.
+#'
+
+QueryVertica <- function (username, query, password){
+  msg.out <- capture.output(suppressMessages(require(RJDBC)))
+  drv <- JDBC("com.vertica.jdbc.Driver", driverLocation)
+  conn <- dbConnect(drv, v, username, password)
+  data <- dbGetQuery(conn, query)
+  dbDisconnect(conn)
+  return(data)
+}
+```
+
+## I. Other Useful Packages for Data Processing
+Now, we are going to cover a few more useful packages, however, it goes without saying that this is not an exhaustive list. R is open source and there are many packages out there for varying use-cases. To see how these packages work, we are going to use some daily data by client and by vertical for all Tier 1 clients.
+
+```{r pullData}
+# QueryVertica is already loaded along with username/password
+query <- "
+SELECT
+	*
+FROM
+	(SELECT
+		client_name
+		, vertical_name
+		, client_id
+	FROM
+		client_lookup_table
+	WHERE
+		ranking = 'TIER 1'
+	GROUP BY
+		client_name
+		, vertical_name
+		, client_id) clients
+JOIN
+	(SELECT
+		*
+	FROM
+		client_stats_table
+	WHERE
+		day >= CURRENT_DATE - 30) stats
+ON
+	clients.client_id = stats.client_id
+"
+
+# query data into a dataframe
+df <- QueryVertica(username, query, password)
+
+# see dimensions of result
+dim(df)
+```
+
+\pagebreak
+
+```{r print_colnames}
+# see what columns we have
+colnames(df)
+```
+
+Looks like we're dealing with quite a bit of data!
+
+### A. `data.table`
+Dataframes are great, but they have their limits. When they get very large, they slow down considerably. This is where `data.table` comes in. `data.table` *inherits* from `data.frame` meaning we can work with objects of the `data.table` class as we would with dataframes, however, they also have additional functionality that dataframes do not; in other words, `data.table` is an enhanced `data.frame`. `data.table` provides fast operations for subsetting, grouping, updating values, etc. You can turn `data.frame` objects into `data.table` objects using `data.table()`
+
+```{r makeDT, warning=FALSE, message=FALSE}
+# load the data.table package
+library(data.table)
+
+# turn df into a data.table
+DT <- data.table(df)
+
+# see what type of object we have
+class(DT)
+```
+
+\pagebreak
+
+#### 1. Syntax
+Selecting rows and columns from `data.table` objects is similar to a SQL statement; there are 3 parts: `i` (`WHERE`), `j` (`SELECT`), `by` (`GROUP BY`) where `by` can be a list.
+
+* **General Form**:
+    + `DT[i, j, by]`
+    + Take `DT`, subset rows using `i`, then calculate `j` grouped by `by`
+* **Selecting Rows (`i`)**:
+    + `DT[2:4,]`
+    + `DT[2:4]`
+    + Note the second option here will throw an error if you try it on a `data.frame`
+* **Selecting Columns (`j`)**:
+    + `DT[, .(col2, col4)]`
+    + *`.()` is the same as `list()`*; you will need this notation anytime you choose more than one column.
+    + You can also run computations and recycle columns (this should remind you of `dplyr`):
+        + `DT[, .(Total = sum(A), C = mean(C))]`
+    + To *apply* the same function across multiple columns use `lapply(list_of_cols, function)`:
+        + `DT[, lapply(.SD, median), by = B]`
+        + `.SD` = Subset of Data (this will use all data selected by `i`)
+        + `lapply()` returns a list so there is no need to use `.()`
+* **Grouping (`by`)**:
+    + `DT[3:5, .(sum(B)), by = .(A)]`
+    + Note that the `by` argument also uses the `.()` for making lists and that you can just provide the value if it isn't more than one
+* **Update Column Values**:
+    + `DT[, LHS := RHS]`
+    + Values of `RHS` (right-hand side) will be assigned to `LHS` (left-hand side) variables.
+        + `LHS` should be a vector if more than one
+        + `RHS` should be a list if more than one
+    + Set `RHS` to NULL to remove columns
+* **Update Values by Row**:
+    + Rather than use a `for` loop with `data.table`, you should use `set(DT, i, j, value)`
+        + `for(i in 1:5) set(DT, i, 3L, i + 1)`
+        + For each row in DT, set the 3rd column's value to the row number plus 1.
+* **Update Column Names**:
+    + `setnames(DT, "old", "new")`
+* **Modify Column Order**:
+    + `setcolorder(DT, newOrderVector)`
+* **Indexing**:
+    + `DT[A == "a"]`
+        + The filter should be placed in the `i`; if it is in the `j`, it will return a logical vector of whether or not each row met that criteria.
+    + `DT[A %in% c("a", "c")]`
+        + Filter can use an `in` statement.
+    + Selecting data is faster than on `data.frame` since `data.table` creates an index automatically (by default) on the `A` column (in this case) the first time we use it, so that it is faster the next time.
+
+\pagebreak
+
+* **Using Keys**:
+    + Create a key for easy lookup without having to use the index method above:
+        + `setkey(DT, A)` to set column A as the index
+        + `DT["a"]` now selects all rows where column A is "a"
+    + If there are duplicates in the key column, use the `mult` argument during selection to specify which one you want:
+        + `DT["a", mult = "first"]` -- select the first occurence of "a" in column A
+        + `DT["a", mult = "last"]` -- select the last occurence of "a" in column A
+    + Handling keys with no value for the selection:
+        + `DT[c("a", "7"), nomatch = NA]` -- default; adds a row with the missing key along with NA for all other columns
+        + `DT[c("a", "7"), nomatch = 0]` -- don't show any values for keys that aren't present in the data
+    + Multiple keys:
+        + `setkey(DT, A, B)` -- set both columns A and B as keys
+        + `DT[.("b", 6)]` -- select values with "b" in column A **and** 6 in column B
+        + `DT[.("b")]` -- select based on only 1 of the keys
+
+#### 2. Examples
+You can find more about the above in the package documentation. Below are a few ways to use these with company data, however, we won't cover all of the above details.
+
+```{r examplesDT_part1, warning=FALSE, message=FALSE}
+# drop the duplicated client_id column (column 5)
+DT <- DT[, -5, with = FALSE]
+
+# remove some other columns by name
+DT <- DT[, c("zone_currency_id", "cumulated_p_ctr", "cumulated_p_cr") := NULL]
+
+# rename some columns
+setnames(DT, c("post_click_conversions", "post_view_conversions"),
+         c("pc_conv", "pv_conv"))
+
+# properly format the day column as a date
+DT <- DT[, day := as.Date(day)]
+
+# select spend by vertical over the last 30 days
+spend_by_vertical <- DT[,.(sum(revenue, na.rm = TRUE)), by = vertical_name]
+head(spend_by_vertical, 5)
+
+# select data above but only for travel verticals
+DT[vertical_name %in% c("TRAVEL (L2)", "ONLINE TRAVEL AGENTS", "AIRLINES"),
+   .(Spend = sum(revenue, na.rm = TRUE)), by = vertical_name]
+```
+
+\pagebreak
+
+```{r examplesDT_part2, warning=FALSE, message=FALSE}
+# select sum by client for all client_1 accounts
+head(DT[client_name %like% "client_1", .(Spend = sum(revenue, na.rm = TRUE)),
+        by = client_name])
+
+# create keys on client, vertical, and day for easier lookup
+setkey(DT, client_name, vertical_name, day)
+
+# lookup client_2's peformance yesterday
+DT[.("client_2", "DEPARTMENT STORES", Sys.Date() - 1),
+   lapply(.(displays, clicks, revenue, pc_conv), sum, na.rm = TRUE),
+   by = .(client_name, vertical_name, day)]
+
+# lookup client_2's spend total
+DT["client_2", .(Spend = sum(revenue, na.rm = TRUE)), by = .(client_name, vertical_name)]
+```
+
+```{r examplesDT_part3, warning=FALSE, message=FALSE}
+# lookup spending on department store advertisers in the last 15 days by day
+DT[(day >= Sys.Date() - 15 & vertical_name == "DEPARTMENT STORES"),
+   .(Spend = round(sum(revenue, na.rm = TRUE), 2)), by = day][order(day)]
+
+# pull out the client list
+client_list <- DT[, 1, by = client_name][, -2, with = FALSE]
+```
+
+### B. `stringr`
+`stringr` makes working with strings in R easier by providing consistent functions and simplicity of use over base R string operations; these can also be utilized with regular expressions, just note that any regular expresions involving "\\" must be escaped (i.e. "\\w" becomes "\\\\w"). Here are some useful functions and their implementations:
+
+* `str_trim()` -- remove leading/trailing whitespace
+* `str_pad()` -- pad a string with extra whitespace
+* `str_length()` -- returns number of characters in string with improved handling of NAs and factors
+* `str_sub()` -- get a substring
+* `str_c()` -- equivalent to `paste0()`, but also removes NULLs
+* `str_detect()` -- checks for presence of a pattern
+* `str_locate()` -- returns location (start and end index) of the pattern
+* `str_extract()` -- extracts the first match of the text (`str_extract_all()` returns all matches)
+* `str_match()` -- extracts matches and returns a matrix with the first column being the full match, and the remaining columns, the individual capture groups (very useful with regular expressions)
+* `str_replace()` -- replaces the first match (`str_replace_all()` replaces all matches)
+
+*Note that you can use negative indices without any issues. Negative indices start from the end of the item (i.e. -1 is the last index).*
+
+```{r stringr, warning=FALSE, message=FALSE}
+# load stringr package
+library(stringr)
+
+# find all client names with apostrophes and their verticals
+# (use a dummy column for grouping then remove)
+head(apostrophes <- DT[str_detect(DT[,client_name], "'"), 1,
+                       by = .(client_name, vertical_name)][, -3, with = FALSE], 5)
+
+# replace all the apostrophes with an empty string, and
+# calculate the string length (before apostrophe removal)
+head(apostrophes[, .(client_name = str_replace_all(apostrophes$client_name, "'", ""),
+                client_name_length_pre_removal = str_length(client_name))], 5)
+
+
+# find total number of clients with the word "GOOD" in them (using lapply)
+# TRUE is evaluated as 1 and FALSE as 0 when summing
+sum(lapply(client_list, FUN = str_detect, pattern = "GOOD")[["client_name"]])
+```
+
+\pagebreak
+
+```{r stringr_part2, warning=FALSE, message=FALSE}
+# what were they?
+DT[str_detect(client_name, "GOOD"), 1, by = client_name][, -2, with = FALSE]
+
+# extract 1st word from each client name using regex and look at a few
+lapply(client_list, str_extract, "[A-Z]+")[["client_name"]][1150:1155]
+
+# get last 2 letters from client names (locations)
+tail(client_list[, .(location = str_sub(client_name, start = -2, end = -1))])
+```
+
+### C. `lapply` and the `apply` family
+You probably noticed me using a new function in the last 2 sections: `lapply()` (this function is part of base R). This allows you to take a `list` (dataframes and data tables are also lists) and a apply a function to all its elements returning a list of the same size as the input. (Lists can be subsetted with `$name` or `[["name"]]`). There are several other members to the `apply` family that have slightly different behavior (and syntax) based on the type of the object input/output. *This is more efficient than a for loop.*
+
+**Syntax**: `lapply(X = list, FUN = function_to_apply, ... = other_arguments_to_function)`
+
+> `lapply()` will use the list `X` as the *first* argument to the function supplied (`FUN`); however, you may need additional arguments--those can be provided right after the required elements in the function call (`X` and `FUN`). The `...` denotes optional arguments that are usually passed to the underlying functions inside the function in question.
+
+\pagebreak
+
+### D. `reshape2`
+You can restructure your data with the `reshape2` package. There are 2 main functions:
+
+* `melt()` -- turn a dataframe into a form allowing it to be reshaped (i.e. splitting columns into a variable and a value column)
+* `dcast()` -- takes the results from `melt()` and aggregates according to specified columns and functions
+
+```{r reshape2_part1, warning=FALSE, message=FALSE}
+# load reshape2 package
+library(reshape2)
+
+# query for client_2's site events data
+query <- "
+SELECT
+	day
+	, eventname
+	, SUM(events) AS events
+FROM
+	site_events_table
+WHERE
+	partner_id = 5535
+	AND day >= CURRENT_DATE() - 30
+GROUP BY
+	day
+	, eventname
+"
+
+client_2_events <- QueryVertica(username, query, password)
+
+# look at data
+head(client_2_events)
+```
+
+\pagebreak
+
+This is good for graphing...
+
+```{r reshape2_part2, warning=FALSE, message=FALSE}
+# sample plot
+library(ggplot2)
+
+# multi-series line graph
+ggplot(client_2_events,
+       aes(x = as.Date(day), y = events, col = eventname)) +
+  geom_line() +
+  ggtitle("client_2's Site Events") +
+  labs(x = "Date", y = "Site Events", col = "Event Name") +
+  scale_y_continuous(labels = scales::comma)
+```
+
+\pagebreak
+
+```{r reshape2_part3}
+# facet wrapped
+ggplot(client_2_events,
+       aes(x = as.Date(day), y = events)) +
+  geom_line() +
+  facet_wrap(~ eventname) +
+  ggtitle("client_2's Site Events") +
+  labs(x = "Date", y = "Site Events") +
+  scale_y_continuous(labels = scales::comma)
+```
+
+...but it's not too useful for reporting since people will need to pivot the results. We need to reshape the data and go from the long dataframe we queried for to a wide dataframe with each eventname as a column.
+
+```{r reshape2_part4}
+# melt the dataframe
+melted <- melt(client_2_events)
+head(melted)
+
+# use dcast to reshape the data
+reshaped <- dcast(melted, day ~ eventname + variable, sum)
+head(reshaped)
+```
+
+`dcast()` sorted our data for us, and this wide format is much better for human consumption! How about if we received our data in this format though? How do we go from wide to long?
+
+```{r reshape2_part5, warning=FALSE, message=FALSE}
+# turn reshaped into the original (define the column names in this step)
+reverted <- melt(reshaped, variable.name = "eventname", value.name = "events")
+head(reverted)
+
+# let's prove this is the same as the original using setequal from dplyr
+library(dplyr)
+
+# we need to rename the values in eventname since they got appended with "_events"
+# let's use stringr and lapply to do this!
+reverted$eventname <- lapply(reverted, str_replace,
+                             pattern = "_events", replacement = "")[["eventname"]]
+
+# check for equality
+setequal(reverted, client_2_events)
+```
+
+Note that `reverted` is sorted while the original data was not; base R's `setequal()` function will wrongly declare they aren't equal but `dplyr`'s version gets it right!
+
+\pagebreak
+
+## II. Exercises
+
+Let's do some practice problems to challenge your understanding.
+
+1. Query Vertica for spend by day for the last 5 days for 3 clients of your choice. Reshape the long dataframe into a wide one with each client as a column.
+
+```{r presolution1, eval=FALSE}
+library(reshape2)
+```
+
+```{r solution1_part1}
+# QueryVertica has been loaded along with username/password
+query <- "
+SELECT
+	day
+	, client_name
+	, SUM(revenue) AS spend
+FROM
+	(SELECT
+		client_name
+		, client_id
+	FROM
+		client_lookup_table
+	WHERE
+		client_name IN ('c1', 'c2', 'c3')
+	GROUP BY
+		client_name
+		, client_id) cl
+JOIN
+	client_stats_table stats
+ON
+	cl.client_id = stats.client_id
+WHERE
+	day >= CURRENT_DATE() - 5
+GROUP BY
+	day
+	, client_name
+"
+
+df <- QueryVertica(username, query, password)
+
+# inspect data
+head(df)
+```
+
+\pagebreak
+
+```{r solution1_part2}
+# reshape the data
+(reshaped_df <- dcast(melt(df), day ~ client_name + variable))
+```
+
+2. Read in a 2M row excerpt of the client catalog from the provided textfile using the `fread()` function from `data.table` (this is faster than base R and automatically detects options). The file will be read into a `data.table`. (a) Drop the `sqlid` column. (b) Rename the `id` column `external_id`. (c) Make the `name` and `external_id` columns keys. (d) Select the `name` and `external_id` of the most expensive item and least expensive item. Limit the name of the selection to 35 characters.
+
+```{r presolution2, eval=FALSE}
+library(data.table)
+library(stringr)
+```
+
+```{r solution2}
+# read in catalog using data.table's fread()
+catalog <- fread("client_catalog.txt")
+
+# drop column
+catalog <- catalog[, sqlid := NULL]
+
+# update id column name
+setnames(catalog, "id", "external_id")
+
+# make keys
+setkey(catalog, name, external_id)
+
+# select the most and least expensive items
+solution <- catalog[c(which.max(price), which.min(price)), price,
+                    by = .(name, external_id)]
+solution[, c("max_or_min", "name") := .(c("Max", "Min"), str_sub(name, 1, 35))]
+solution
+```
+
+3. Using the client catalog you obtained in `(2)`, (a) find number of products with extra data containing the word "promo". (b) Find the unique promo offers and display a few of them. You will need to use a regular expression to find the value in the `extra` field, then you will need to use `str_match()` to find that pattern, and use a function from the `apply` family to get the results of applying that function on all values of `extra`.
+
+> *Hint*: If you are having trouble with the regex, you can take a few entries of the `extra` column in the data.table and work on adapting a regex here: http://regexr.com/. Be sure to look at how `str_match()` works and pick an appropriate `apply` family member; depending on how you do this, you may need to change the type of the object you give the function from the `apply` family.
+
+```{r presolution3, eval=FALSE}
+library(stringr)
+```
+
+```{r solution3}
+# check if each item has "promo" in extra field
+on_promo <- lapply(catalog[, extra], str_detect, pattern = "promo")
+
+# calculate number of promo products
+sum(unlist(on_promo))
+
+# find all promo offers (this is different than just looking for the word promo)
+promos <- apply(as.matrix(catalog[, extra]), 1, FUN = str_match,
+                pattern = "(?:promo@V)([^@]+)")[2,]
+
+# remove the NA's from promos
+promos <- na.omit(promos)
+
+# find all unique promos
+unique_promos <- unique(promos)
+length(unique_promos)
+
+# display a few promos
+head(unique_promos)
+```
