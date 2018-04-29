@@ -1,0 +1,18 @@
+---
+title: "Lesson 7 Exercises"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, dev = "cairo_pdf", warning = FALSE, message = FALSE)
+```
+
+Let's do some practice problems to challenge your understanding of the company R package and review the material from the prior lessons.
+
+1. Write a query to collect the last 30 days of stats for the client of your choice and save it as a `.sql` file. Make the query simple (like the one we used in the lesson) and dynamic. Use the company R package to read the query into a string and query Vertica once you have modified the query. Use `dplyr` to pivot the data up as you wish, then save the dataframe to a CSV.
+
+2. Using the dataframe you obtained in (1), (a) make a company-themed ggplot showing spend by day. (b) Save the graph as a PNG. (c) Send both the PNG and the CSV from (1) to yourself using the company R package.
+
+3. Turn the dataframe and ggplot from (1) and (2) into a PowerPoint using the company R package and `ReporteRs`. Send yourself the deck.
