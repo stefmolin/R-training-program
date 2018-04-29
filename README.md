@@ -15,7 +15,7 @@ During lessions, notes are reviewed and the remaining time is used to work on 3 
 6. **R Markdown** (2 hours) -- reproducible, formatted analysis
 7. **Company R Package** (2 hours) -- using the company R package to query databases, format graphs, generate PowerPoints and send emails
 
-### B. Problem Sets
+### B. Problem Sets (not included here)
 Slack channels available to handle questions. Solutions are sent out 1 week after the problem set.
 
 1. Sent out Monday after R training week finishes.
