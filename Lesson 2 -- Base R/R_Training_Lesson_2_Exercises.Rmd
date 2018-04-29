@@ -1,0 +1,18 @@
+---
+title: "Lesson 2 Exercises"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Let's do some practice problems to challenge your understanding.
+
+1. Create a CSV with the partner names of 5 accounts from your pod (named exactly how they would appear in the database) and the name of the AS on the account. Then read from the CSV into a dataframe. Run a simple query (not a dynamic one) for all accounts managed by the AS's in your pod, the partner ID, and the partner name. Merge the two data frames (inner join). Note that depending on how you define the column names you may have to use the `by` arguments to `merge()`.
+
+2. Create another dataframe with 2 columns: the pod leader and the work level of the account for the accounts found in (`1`). Use `cbind()` to combine them into 1 dataframe. Use `rbind()` to add an additional row of your choosing to the dataframe.
+
+3. Adapt your query from (`1`) to query for only one AS but let the AS be specified at the function call rather than in the SQL itself. Write a function that takes care of the whole process.

@@ -1,0 +1,153 @@
+---
+title: "Lesson 2 Solutions"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r queryVertica, echo = FALSE, warning = FALSE, message=FALSE}
+library(getPass)
+library(RJDBC)
+
+username <- "s.molin"
+password <- getPass("Vertica password:")
+
+# Set .jar file location and Vertica connection string
+driverLocation <- "[...]your_vertica_driver.jar"
+v <- "jdbc:vertica://<vertica_cluster_goes_here>:<port>/<DB>?ConnectionLoadBalance=true"
+
+#' @description Query Vertica for the specified query. Return a dataframe of the results.
+#'
+#' @param username Vertica login
+#' @param query Vertica query (be careful with comments)
+#' @param password Vertica password to access the database
+#'
+#' @return dataframe of results
+#'
+#' @note Queries are turned into strings so if you comment with "--" the result will be
+#' a string with everything after that commented out. Be sure to remove those beforehand.
+#'
+
+QueryVertica <- function (username, query, password){
+  msg.out <- capture.output(suppressMessages(require(RJDBC)))
+  drv <- JDBC("com.vertica.jdbc.Driver", driverLocation)
+  conn <- dbConnect(drv, v, username, password)
+  data <- dbGetQuery(conn, query)
+  dbDisconnect(conn)
+  return(data)
+}
+```
+
+Let's do some practice problems to challenge your understanding.
+
+1. Create a CSV with the partner names of 5 accounts from your pod (named exactly how they would appear in the database) and the name of the AS on the account. Then read from the CSV into a dataframe. Run a simple query (not a dynamic one) for all accounts managed by the AS's in your pod, the partner ID, and the partner name. Merge the two data frames (inner join). Note that depending on how you define the column names you may have to use the `by` arguments to `merge()`.
+
+```{r solution1}
+# read in the CSV we created and take a look at it
+(csvdf <- read.csv("sample_file.csv", stringsAsFactors = FALSE))
+
+# capitalize partner names so they are like the database
+csvdf$partner <- toupper(csvdf$partner)
+
+# query Vertica for your pod's book of business (username/password already defined)
+# QueryVertica() function already sourced
+query <- "
+SELECT
+	_id_client
+	, name_client
+FROM
+	client_lookup_table
+WHERE
+	account_strategist_employee_id IN (
+		SELECT
+			employee_id
+		FROM
+			employee_table
+		WHERE
+			full_name IN ('[AS 1]', '[AS 2]', '[AS 3]')
+		GROUP BY
+			employee_id)
+GROUP BY
+	_id_client
+	, name_client
+"
+
+verticadf <- QueryVertica(username, query, password)
+
+# inner join and map the columns
+(pod <- merge(csvdf, verticadf, by.x = "client", by.y = "name_client"))
+```
+
+2. Create another dataframe with 2 columns: the pod leader and the work level of the account for the accounts found in (`1`). Use `cbind()` to combine them into 1 dataframe. Use `rbind()` to add an additional row of your choosing to the dataframe.
+
+```{r solution2}
+# create podDetails dataframe
+podDetails <- data.frame(pod_leader = "[AS 1]",
+                         work_level = c("Low", "Med", "High", "Low", "Med"),
+                         stringsAsFactors = FALSE)
+
+# add podDetails to the right of pod
+(pod <- cbind(pod, podDetails))
+
+# make a new row
+newRow <- data.frame(client = "fake_client_4", AS = "[AS 3]", _id_client = 1234,
+                     pod_leader = "[AS 1]", work_level = "High",
+                     stringsAsFactors = FALSE)
+
+# add new row to the bottom of pod
+(pod <- rbind(pod, newRow))
+```
+
+\pagebreak
+
+3. Adapt your query from (`1`) to query for only one AS but let the AS be specified at the function call rather than in the SQL itself. Write a function that takes care of the whole process.
+
+```{r solution3}
+#' @description Query Vertica for the book of business of given AS
+#'
+#' @param AS_name AS name
+#' @param username Vertica login
+#' @param password Vertica password to access the database
+#'
+#' @return dataframe of partner name and IDs
+#'
+#' @note Here for the purposes of this exercise the function has
+#' default values for username meaning they don't have to be in
+#' the call to QueryVertica(). (username/password are predefined).
+#'
+
+getBookOfBusiness <- function(AS_name, username = "s.molin", password){
+  query <- "
+  SELECT
+  	_id_client
+  	, name_client
+  FROM
+  	client_lookup_table
+  WHERE
+  	account_strategist_employee_id IN (
+  		SELECT
+  			employee_id
+  		FROM
+  			employee_table
+  		WHERE
+  			full_name = '%s'
+  		GROUP BY
+  			employee_id)
+  GROUP BY
+  	_id_client
+  	, name_client
+  "
+
+  # QueryVertica() function already sourced (username/password already defined)
+  df <- QueryVertica(username, sprintf(query, toupper(AS_name)), password)
+
+  # return the dataframe of results
+  return(df)
+}
+
+head(getBookOfBusiness("[AS 1]", password = password))
+```
