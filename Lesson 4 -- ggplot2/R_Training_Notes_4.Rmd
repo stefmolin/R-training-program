@@ -1,0 +1,588 @@
+---
+title: "R Training Notes"
+subtitle: "Lesson 4"
+author: "Stefanie Molin"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r QueryVertica_setup, echo = FALSE, warning = FALSE, message = FALSE}
+library(getPass)
+library(RJDBC)
+
+username <- "s.molin"
+password <- getPass("Vertica password:")
+
+# Set .jar file location and Vertica connection string
+driverLocation <- "<path_to_your_vertica_driver>.jar"
+v <- "jdbc:vertica://<vertica_cluster_here>:<port>/<DB>?ConnectionLoadBalance=true"
+
+#' @description Query Vertica for the specified query. Return a dataframe of the results.
+#'
+#' @param username Vertica login
+#' @param query Vertica query (be careful with comments)
+#' @param password Vertica password to access the database
+#'
+#' @return dataframe of results
+#'
+#' @note Queries are turned into strings so if you comment with "--" the result will be
+#' a string with everything after that commented out. Be sure to remove those beforehand.
+#'
+
+QueryVertica <- function (username, query, password){
+  msg.out <- capture.output(suppressMessages(require(RJDBC)))
+  drv <- JDBC("com.vertica.jdbc.Driver", driverLocation)
+  conn <- dbConnect(drv, v, username, password)
+  data <- dbGetQuery(conn, query)
+  dbDisconnect(conn)
+  return(data)
+}
+```
+
+## I. Data Visualization
+Now, we are going to build on the knowledge from the last session and learn how to use the `ggplot2` package to visualize data in conjunction with the packages we covered in prior lessons. Let's continue to work with the dataframe `client_1_stats_pivot` that we defined in the `dplyr` section as:
+
+```{r pullData, warning = FALSE, message = FALSE}
+# load dplyr
+library(dplyr)
+
+# get date for 30 days ago
+startDate <- Sys.Date() - 30
+
+# query for last 30 days of client stats for client_1
+query <- "
+SELECT
+  *
+FROM
+  client_stats_table
+WHERE
+  day >= '%s'
+  AND client_id = 4624
+"
+
+# query Vertica for data and store in dataframe client_1_stats
+client_1_stats <- QueryVertica(username, sprintf(query, startDate), password)
+
+# pivot dataframe
+client_1_stats_pivot <- client_1_stats %>%
+  select(day, displays, clicks, revenue, pc_conv = post_click_conversions,
+         pc_sales = post_click_sales) %>%
+  filter(as.Date(day) >= Sys.Date() - 25) %>%
+  group_by(day) %>%
+  summarize(total_clicks = sum(clicks, na.rm = TRUE),
+            total_imps = sum(displays, na.rm = TRUE),
+            spend = sum(revenue, na.rm = TRUE),
+            conv = sum(pc_conv, na.rm = TRUE)) %>%
+  mutate(ctr = total_clicks/total_imps, cpc = spend/total_clicks) %>%
+  arrange(day)
+```
+
+\pagebreak
+
+```{r check_data}
+# see first few rows
+head(client_1_stats_pivot)
+```
+
+### A. Plotting with base R
+Before we get into using `ggplot2`, let's learn how to make some simple plots with base R.
+
+> `plot()`: can be used to make scatterplots, line graphs, and variations of the two.
+
+```{r baseR_scatterplot, fig.height=3.2}
+# using the client_1_stats data, create a red scatterplot of clicks and cpc
+plot(client_1_stats_pivot$cpc, client_1_stats_pivot$total_clicks, col = "red")
+```
+
+\pagebreak
+
+```{r baseR_linegraph, fig.height=3.2}
+# plot spend by day with labels
+plot(as.Date(client_1_stats_pivot$day), client_1_stats_pivot$spend, type = "l",
+     main = "Spend by day", xlab = "Day", ylab = "Spend")
+```
+
+> `hist()`: make a histogram
+
+```{r baseR_histogram, fig.height=3.5}
+# histogram of spend the last 25 days
+hist(client_1_stats_pivot$spend)
+```
+
+\pagebreak
+
+> `barplot()`: draw a bar chart
+
+```{r baseR_barplot, fig.height=3.3}
+# bar chart of impressions
+barplot(client_1_stats_pivot$total_imps)
+```
+
+> `boxplot()`: box-and-whisker plot
+
+```{r baseR_boxplot, fig.height=3.5}
+# box-and-whisker plot of spend
+boxplot(client_1_stats_pivot$spend)
+```
+
+We won't go into how to change point shape, color, line type, etc. You can read up about that in the documentation for each function.
+
+### B. `ggplot2`
+Base R plots are pretty basic and not that pretty, so they are more used to quickly get a sense of any patterns in the data you are dealing with but not for sharing with other parties. To make graphs fit for sharing, we will use the popular `ggplot2` package. This package is based on the grammar of graphics; you tell `ggplot2` how to map your variables and what options to use and `ggplot2` builds the plot. Note that is is just a sampling of what you can do with `ggplot2`, you can find plenty more plot types, customizations, etc. in the package documentation.
+
+First, we load the packages:
+```{r load_ggplot2, warning = FALSE, message = FALSE}
+# for plotting
+library(ggplot2)
+```
+
+#### 1. Basic syntax
+
+```{r ggplot2_syntax, eval = FALSE}
+# basic ggplot useage with geom and ... for additional aesthetics (col, fill, size, etc.)
+df %>% ggplot(aes(x = col_name_1, y = col_name_2, ...)) +
+  geom_*()
+```
+
+#### 2. Aesthetics layer (`aes()`)
+The aesthetics layer tells ggplot how to map our variables. We are going to cover the most common here.
+
+> x, y: map variables to the x and y axes
+
+> col: determine the colors based on unique values of this variable
+
+> fill: does the same as color but for bar charts
+
+> size: determine the size of points based on the value of this variable
+
+\pagebreak
+
+#### 3. Common geoms
+The geom layer tells ggplot how to display the mapped variables.
+
+> `geom_point()` -- scatterplot
+
+```{r ggplot2_sample_scatterplot, fig.height=4}
+# scatterplot showing relation of CPC and clicks for client_1
+# show days of the week as different colors sized by spend (just to illustrate use)
+
+# define aesthetics
+client_1_stats_pivot %>% ggplot(aes(x = cpc, y = total_clicks,
+                           col = factor(format(as.Date(client_1_stats_pivot$day), "%A"),
+                                           levels = c("Sunday", "Monday", "Tuesday",
+                                                      "Wednesday", "Thursday", "Friday",
+                                                      "Saturday")),
+                           size = spend)) +
+  # add points
+  geom_point() +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_x_continuous(labels = scales::dollar) +
+  scale_y_continuous(labels = scales::comma) +
+
+  # add title
+  ggtitle("Scatterplot") +
+
+  # fix axis labels
+  xlab("CPC") +
+  ylab("Clicks") +
+
+  # fix legend titles (match to aes labels)
+  labs(col = "Day of Week", size = "Spend")
+```
+
+That may look more complicated, but it is very readable and easy to add onto. Notice how we used `factors` here to show the days of the week in the order we wanted (using `levels`). We also cleaned up the axis labels and legend title since they get labeled exactly what you put into that value as the aesthetics, which can be confusing in the case of the `col` argument [`factor(format(as.Date(client_1_stats_pivot$day), "%A"), levels = c("Sunday", "Monday", "Tuesday",  "Wednesday", "Thursday", "Friday", "Saturday"))`]. The "`::`" notation in `scale_x_continuous(labels = scales::dollar)` is not required, but it helps to see where the function the code is using came from.
+
+> `geom_line()` -- line graph
+
+```{r ggplot2_sample_line_graph, fig.height=2.8}
+# spend by day for client_1
+
+# define aesthetics
+client_1_stats_pivot %>% ggplot(aes(x = as.Date(day), y = spend)) +
+  # add line
+  geom_line(col = "blue") +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_y_continuous(labels = scales::dollar) +
+
+  # add title
+  ggtitle("Spend by Day") +
+
+  # fix axis labels
+  xlab("Day") +
+  ylab("Spend")
+```
+
+> `geom_histogram()` -- histogram
+
+```{r ggplot2_sample_histogram, fig.height=2.8}
+# histogram of client_1 spend
+
+# define aesthetics
+client_1_stats_pivot %>% ggplot(aes(x = spend)) +
+  # add histogram
+  geom_histogram(binwidth = 750) +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_x_continuous(labels = scales::dollar) +
+
+  # add title
+  ggtitle("Spend Histogram") +
+
+  # fix axis labels
+  xlab("Spend")
+```
+
+\pagebreak
+
+> `geom_bar()` -- bar chart of count
+`geom_col()` -- bar chart of values
+
+```{r ggplot2_sample_barchart, fig.height=3.5}
+# bar chart counting days of week in this data set
+
+# define aesthetics
+client_1_stats_pivot %>%
+  ggplot(aes(x = as.Date(day), y = total_imps,
+             fill = factor(
+               ifelse(format(as.Date(client_1_stats_pivot$day), "%A") %in%
+                   c("Sunday", "Saturday"),
+                   "Weekend", "Weekday")))) +
+  # add bars
+  geom_col() +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_y_continuous(labels = scales::comma) +
+
+  # add title
+  ggtitle("Impressions by Day") +
+
+  # fix axis labels
+  xlab("Day") +
+  ylab("Impressions")  +
+
+  # fix legend title
+  labs(fill = "Type of Day")
+```
+
+\pagebreak
+
+> `geom_boxplot()` -- box and whisker plot
+
+```{r ggplot2_sample_boxplot, fig.height=3.5}
+# client_1 spend boxplot
+
+# define aesthetics
+client_1_stats_pivot %>%
+  ggplot(aes(x = factor(1L), y = spend)) +
+
+  # add boxplot
+  geom_boxplot() +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_y_continuous(labels = scales::dollar) +
+
+  # add title
+  ggtitle("Spend Boxplot") +
+
+  # remove x-axis and fix y-axis labels
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ylab("Spend")
+```
+
+#### 4. Layering on
+
+##### i. `geom_abline()`/`geom_hline()`/`geom_vline()`
+Add a line to your graph either by specifiying slope and intercept or the location for a vertical/horizontal line. These are the `ggplot2` versions of base R.
+
+\pagebreak
+
+> `geom_abline()`
+Add a darkgreen abline to the scatterplot.
+
+```{r ggplot2_sample_abline, fig.height=3.5}
+# scatterplot showing relation of CPC and clicks for client_1
+# show days of the week as different colors
+
+# define aesthetics
+client_1_stats_pivot %>% ggplot(aes(x = cpc, y = total_clicks,
+                           col = factor(format(as.Date(client_1_stats_pivot$day), "%A"),
+                                           levels = c("Sunday", "Monday", "Tuesday",
+                                                      "Wednesday", "Thursday", "Friday",
+                                                      "Saturday")))) +
+  # add points
+  geom_point() +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_x_continuous(labels = scales::dollar) +
+  scale_y_continuous(labels = scales::comma) +
+
+  # add title
+  ggtitle("Scatterplot with abline") +
+
+  # fix axis labels
+  xlab("CPC") +
+  ylab("Clicks") +
+
+  # fix legend title
+  labs(col = "Day of Week") +
+
+  # add line specifying slope and intercept
+  geom_abline(intercept = min(client_1_stats_pivot$total_clicks),
+              slope = median(client_1_stats_pivot$total_clicks), col = "darkgreen")
+```
+
+> `geom_hline()`
+Add a orange horizontal line at median spend ($`r format(round(median(client_1_stats_pivot$spend), 2), big.mark = ",")`).
+
+```{r ggplot2_sample_hline, fig.height=3.5}
+# spend by day for client_1
+
+# define aesthetics
+client_1_stats_pivot %>%
+  ggplot(aes(x = as.Date(day), y = spend)) +
+
+  # add line
+  geom_line(col = "blue") +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_y_continuous(labels = scales::dollar) +
+
+  # add title
+  ggtitle("Spend by Day with Median Spend Reference Line") +
+
+  # fix axis labels
+  xlab("Day") +
+  ylab("Spend")  +
+
+  # add reference line
+  geom_hline(yintercept = median(client_1_stats_pivot$spend), col = "orange")
+```
+
+\pagebreak
+
+> `geom_vline()`
+Add a red vertical line at the median CPC ($`r round(median(client_1_stats_pivot$cpc), 2)`).
+
+```{r ggplot2_sample_vline, fig.height=3.5}
+# scatterplot showing relation of CPC and clicks for client_1
+# show days of the week as different colors
+
+# define aesthetics
+client_1_stats_pivot %>% ggplot(aes(x = cpc, y = total_clicks,
+                           col = factor(format(as.Date(client_1_stats_pivot$day), "%A"),
+                                           levels = c("Sunday", "Monday", "Tuesday",
+                                                      "Wednesday", "Thursday", "Friday",
+                                                      "Saturday")))) +
+  # add points
+  geom_point() +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_x_continuous(labels = scales::dollar) +
+  scale_y_continuous(labels = scales::comma) +
+
+  # add title
+  ggtitle("Scatterplot with Reference Line at Median CPC") +
+
+  # fix axis labels
+  xlab("CPC") +
+  ylab("Clicks") +
+
+  # fix legend title
+  labs(col = "Day of Week") +
+
+  # add reference line
+  geom_vline(xintercept = median(client_1_stats_pivot$cpc), col = "red")
+```
+
+Note that these can also be combined (you can keep adding layers). Let's see what the median CPC and median clicks look like on the scatterplot.
+
+```{r ggplot2_sample_crosshairs, fig.height=3}
+# scatterplot showing relation of CPC and clicks for client_1
+# show days of the week as different colors
+
+# define aesthetics
+client_1_stats_pivot %>% ggplot(aes(x = cpc, y = total_clicks,
+                           col = factor(format(as.Date(client_1_stats_pivot$day), "%A"),
+                                           levels = c("Sunday", "Monday", "Tuesday",
+                                                      "Wednesday", "Thursday", "Friday",
+                                                      "Saturday")))) +
+  # add points
+  geom_point() +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_x_continuous(labels = scales::dollar) +
+  scale_y_continuous(labels = scales::comma) +
+
+  # add title
+  ggtitle("Scatterplot with Reference Lines at Medians") +
+
+  # fix axis labels
+  xlab("CPC") +
+  ylab("Clicks") +
+
+  # fix legend title
+  labs(col = "Day of Week") +
+
+  # add crosshairs for medians
+  geom_vline(xintercept = median(client_1_stats_pivot$cpc), col = "red") +
+  geom_hline(yintercept = median(client_1_stats_pivot$total_clicks), col = "red")
+```
+
+\pagebreak
+
+##### ii. `stat_smooth(method = "lm", se = FALSE, alpha = 0.6)`
+Add a regression line with transparency 0.6 (`alpha`). Note that when plotting multiple items on a graph, it may be useful to adjust the transparency of the series so that they don't cover each other up. This can be done by specifying the `alpha` parameter with a value less than 1 (1 = opaque, 0 = transparent).
+
+```{r ggplot2_statsmooth_sample, fig.height=3.5}
+# scatterplot showing relation of CPC and clicks for client_1
+
+# define aesthetics
+client_1_stats_pivot %>%
+  ggplot(aes(x = cpc, y = total_clicks)) +
+
+  # add points
+  geom_point() +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_x_continuous(labels = scales::dollar) +
+  scale_y_continuous(labels = scales::comma) +
+
+  # add title
+  ggtitle("Scatterplot with Regression Line") +
+
+  # fix axis labels
+  xlab("CPC") +
+  ylab("Clicks") +
+
+  # add regression line
+  stat_smooth(method = "lm", se = FALSE, alpha = 0.6)
+```
+
+\pagebreak
+
+#### 5. Faceting
+What if we want to see metrics over categories, like events by site type or tag name? We could put these on the color aesthetic, but things get messy very quickly, and it gets hard to distinguish colors after 5 or 6 of them get added to the graph. Faceting helps us by breaking them out into separate graphs either wrapped or in a grid with all possible combinations, so we can see everything in one plot.
+
+Look at the linear regression of the scatterplot with the day of week added to see the motivation behind this.
+
+```{r ggplot2_messy_scatterplot, fig.height=2.5}
+# scatterplot showing relation of CPC and clicks for client_1
+# show days of the week as different colors
+
+# define aesthetics
+client_1_stats_pivot %>% ggplot(aes(x = cpc, y = total_clicks,
+                           col = factor(format(as.Date(client_1_stats_pivot$day), "%A"),
+                                           levels = c("Sunday", "Monday", "Tuesday",
+                                                      "Wednesday", "Thursday", "Friday",
+                                                      "Saturday")))) +
+  # add points
+  geom_point() +
+
+  # optional stuff to make it cleaner
+  # format labels
+  scale_x_continuous(labels = scales::dollar) +
+  scale_y_continuous(labels = scales::comma) +
+
+  # add title
+  ggtitle("Scatterplot with Regression Lines") +
+
+  # fix axis labels
+  xlab("CPC") +
+  ylab("Clicks") +
+
+  # fix legend title
+  labs(col = "Day of Week") +
+
+  # add regression lines
+  stat_smooth(method = "lm", se = FALSE, alpha = 0.6)
+```
+
+Wow, that's hard to read! Let's clean this up by faceting.
+
+##### i. `facet_grid()`
+Facet grids contain all possible combinations of the variables you want to facet on. Note that the "`.`" here means you aren't faceting on anything to be printed along the y-axis. The "`~`" separates the rows facet from the columns facet. Here we only facet by columns with the day of week.
+
+```{r ggplot2_facet_grid, fig.height=2.7}
+# scatterplot showing relation of CPC and clicks for client_1
+
+# define aesthetics
+client_1_stats_pivot %>%
+  ggplot(aes(x = cpc, y = total_clicks)) +
+
+  # add points
+  geom_point() +
+
+  # format labels
+  scale_x_continuous(labels = scales::dollar, breaks = scales::pretty_breaks(n = 2)) +
+  scale_y_continuous(labels = scales::comma) +
+
+  # add title
+  ggtitle("Facet Grid Scatterplot per Day with Regression Lines") +
+
+  # fix legend title and axis labels
+  labs(col = "Day of Week", x = "CPC", y = "Clicks") +
+
+  # add regression lines
+  stat_smooth(method = "lm", se = FALSE, alpha = 0.6) +
+
+  # add facet grid
+  facet_grid(. ~ factor(format(as.Date(client_1_stats_pivot$day), "%A"),
+                        levels = c("Sunday", "Monday", "Tuesday", "Wednesday",
+                                   "Thursday", "Friday", "Saturday")))
+```
+
+\pagebreak
+
+##### ii. `facet_wrap()`
+Facet wrap only contains all possible combinations for which there is data to fill the intersection of a given row and column whereas facet grids will have a blank section if there is no data. This is why facet grids will not have whitespace and facet wraps will. Facet wraps, just as the name implies, create a series of plots from left to right and wrap to the next rows until they have plotted all combinations with data.
+
+*Note that here we don't need to add "`.`" if we aren't using that faceting element as we did with `facet_grid()`*
+
+
+```{r ggplot2_facet_wrap, fig.height=3}
+# scatterplot showing relation of CPC and clicks for client_1
+
+# define aesthetics
+client_1_stats_pivot %>% ggplot(aes(x = cpc, y = total_clicks)) +
+  # add points
+  geom_point() +
+
+  # format labels
+  scale_x_continuous(labels = scales::dollar) +
+  scale_y_continuous(labels = scales::comma) +
+
+  # add title
+  ggtitle("Facet Wrap Scatterplot per Day with Regression Lines") +
+
+  # fix legend title and axis labels
+  labs(col = "Day of Week", x = "CPC", y = "Clicks") +
+
+  # add regression lines
+  stat_smooth(method = "lm", se = FALSE, alpha = 0.6) +
+
+  # add facet wrap
+  facet_wrap(~ factor(format(as.Date(client_1_stats_pivot$day), "%A"),
+                                           levels = c("Sunday", "Monday", "Tuesday",
+                                                      "Wednesday", "Thursday", "Friday",
+                                                      "Saturday")))
+```
+
+Notice how we have empty space the size of 2 plots next to Saturday in this graph, but we didn't have that with `facet_grid()`. Which you use depends on your data and what you are looking to show.
